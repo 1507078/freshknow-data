@@ -1,0 +1,11 @@
+# 未壓縮的工作 DB（壓縮後的 .z 才進版控）
+data/prices.sqlite
+data/prices.sqlite-journal
+
+# 增量 feed 是產生物：CI 每天重生並以 Pages artifact 部署，repo 內不留副本
+docs/feed/
+
+.DS_Store
+
+__pycache__/
+*.pyc

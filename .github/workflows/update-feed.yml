@@ -1,0 +1,67 @@
+name: 更新行情 feed
+
+# 每天補抓農業部最新行情 → 重生四個地區的增量視窗檔 → 部署到 GitHub Pages。
+# App 端只對這些靜態檔發 conditional GET，不再直接打農業部 API。
+#
+# 刻意「不 commit 任何東西」：資料檔天天變，若每日 commit，光是 prices.sqlite.z
+# 一年就會讓 repo 長好幾 GB。改以 Pages artifact 部署，repo 保持乾淨。
+# 工作用的 SQLite 靠 actions/cache 在 run 之間接力；快取失效就從 repo 內
+# 已 commit 的種子往前補（較慢但會自我修復）。
+#
+# 前置設定：Settings → Pages → Source 選「GitHub Actions」。
+on:
+  schedule:
+    - cron: "0 22 * * *"   # 06:00 台北時間（行情多在前一日收盤後才齊）
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 沿用昨天的工作 DB，只補一天；restore-keys 讓我們接上最近一次的快取。
+      # key 綁 .z 的雜湊：commit 新種子時舊快取自動失效，否則 --use-existing 會沿用
+      # 舊 DB、讓新種子（例如新增品項）永遠進不了 feed 的歷史段。
+      - name: 還原 SQLite 快取
+        uses: actions/cache@v4
+        with:
+          path: data/prices.sqlite
+          key: prices-sqlite-${{ hashFiles('data/prices.sqlite.z') }}-${{ github.run_id }}
+          restore-keys: prices-sqlite-${{ hashFiles('data/prices.sqlite.z') }}-
+
+      # 不走 update_seed.sh：那支還會壓回 .z，而 CI 不 commit，壓了也是白壓。
+      # 打包種子 data/prices.sqlite.z 只在「要發 App 新版」時於本機手動更新。
+      - name: 更新行情
+        run: python3 tools/update_seed.py --use-existing
+
+      - name: 產生 feed
+        run: python3 tools/build_feed.py
+
+      # 一併帶上 docs/privacy.html——同一個 Pages 站台供隱私政策與資料檔。
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
