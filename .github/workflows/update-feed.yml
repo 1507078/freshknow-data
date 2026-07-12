@@ -30,9 +30,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -40,7 +40,7 @@ jobs:
       # key 綁 .z 的雜湊：commit 新種子時舊快取自動失效，否則 --use-existing 會沿用
       # 舊 DB、讓新種子（例如新增品項）永遠進不了 feed 的歷史段。
       - name: 還原 SQLite 快取
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: data/prices.sqlite
           key: prices-sqlite-${{ hashFiles('data/prices.sqlite.z') }}-${{ github.run_id }}
@@ -78,7 +78,7 @@ jobs:
         run: python3 tools/build_feed.py
 
       # 一併帶上 docs/privacy.html——同一個 Pages 站台供隱私政策與資料檔。
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: docs
 
@@ -101,4 +101,4 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
