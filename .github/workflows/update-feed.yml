@@ -3,10 +3,13 @@ name: 更新行情 feed
 # 每天補抓農業部最新行情 → 重生四個地區的增量視窗檔 → 部署到 GitHub Pages。
 # App 端只對這些靜態檔發 conditional GET，不再直接打農業部 API。
 #
-# 刻意「不 commit 任何東西」：資料檔天天變，若每日 commit，光是 prices.sqlite.z
-# 一年就會讓 repo 長好幾 GB。改以 Pages artifact 部署，repo 保持乾淨。
-# 工作用的 SQLite 靠 actions/cache 在 run 之間接力；快取失效就從 repo 內
-# 已 commit 的種子往前補（較慢但會自我修復）。
+# feed 與 SQLite 都不 commit：資料天天變，每日 commit 一個 9MB 的 .z 一年就會讓 repo
+# 長好幾 GB。改以 Pages artifact 部署，工作用的 SQLite 靠 actions/cache 在 run 之間接力
+# （快取失效就從 repo 內已 commit 的種子往前補，較慢但會自我修復）。
+#
+# 唯一會 commit 的是 data/latest.txt（幾十 bytes）。那不只是狀態檔——GitHub 會把
+# 「連續 60 天沒有 commit 活動」的 repo 的 scheduled workflow 自動停用，而這個 repo
+# 平時零 commit，正好會踩到。每天推一個微小的 commit 讓 repo 保持活躍，排程才不會靜靜死掉。
 #
 # 前置設定：Settings → Pages → Source 選「GitHub Actions」。
 on:
@@ -19,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write    # 推 data/latest.txt
   pages: write
   id-token: write
 
@@ -45,8 +48,31 @@ jobs:
 
       # 不走 update_seed.sh：那支還會壓回 .z，而 CI 不 commit，壓了也是白壓。
       # 打包種子 data/prices.sqlite.z 只在「要發 App 新版」時於本機手動更新。
+      # 一個請求都沒成功時，這支會非零退出（抓取管線斷了的即時訊號）。
       - name: 更新行情
         run: python3 tools/update_seed.py --use-existing
+
+      # 慢性腐爛的守門：抓取「成功」但資料不再前進（API 悄悄改格式、回空陣列…）時，
+      # 上一步不會叫，feed 會靜靜凍結，而 App 端「抓不到就用本機」的設計讓使用者也無感——
+      # 整條鏈都在靜默降級。這裡讓 job 紅燈，GitHub 才會寄失敗通知。
+      #
+      # 門檻 10 天：實測一年內交易日最大間隔是 6 天（2026 農曆年休市），
+      # 加上行情隔日才發布的延遲與餘裕。設太緊會在連假後誤報。
+      - name: 檢查資料新鮮度
+        run: |
+          python3 - <<'PY'
+          import sqlite3, sys
+          from datetime import date
+          MAX_STALE_DAYS = 10
+          db = sqlite3.connect("data/prices.sqlite")
+          latest = db.execute("SELECT MAX(trans_date) FROM price_daily").fetchone()[0]
+          age = (date.today() - date.fromisoformat(latest)).days
+          print(f"資料截止 {latest}，距今 {age} 天")
+          if age > MAX_STALE_DAYS:
+              sys.exit(f"✗ 行情已 {age} 天沒有前進（門檻 {MAX_STALE_DAYS} 天）——抓取可能已失效")
+          open("data/latest.txt", "w").write(
+              f"data_through: {latest}\nchecked_at: {date.today().isoformat()}\n")
+          PY
 
       - name: 產生 feed
         run: python3 tools/build_feed.py
@@ -55,6 +81,17 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs
+
+      # checked_at 每天都變，所以每天都會有一個 commit——這正是讓 GitHub 不把排程
+      # 當成「repo 已廢棄」而停用的關鍵。GITHUB_TOKEN 的推送不會再觸發 workflow，不會迴圈。
+      - name: 推送資料狀態
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/latest.txt
+          git diff --cached --quiet && { echo "無變化"; exit 0; }
+          git commit -m "資料更新至 $(grep data_through data/latest.txt | cut -d' ' -f2)"
+          git push
 
   deploy:
     needs: build

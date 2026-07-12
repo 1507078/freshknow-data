@@ -67,7 +67,11 @@ def in_whitelist(crop_name: str, groups) -> bool:
 
 
 def fetch_day(market_name: str, tc: str, day: date):
-    """抓某市場、某類、某單日全部品項（不帶 CropName）。回傳 (rows, truncated)。"""
+    """抓某市場、某類、某單日全部品項（不帶 CropName）。回傳 (rows, truncated, ok)。
+
+    ok 用來區分「請求失敗」與「當天休市所以沒資料」——兩者都回空 list，
+    但意義完全不同：前者代表管線壞了要叫，後者是正常的。
+    """
     r = roc(day)
     q = urllib.parse.urlencode({
         "Start_time": r, "End_time": r,
@@ -79,11 +83,11 @@ def fetch_day(market_name: str, tc: str, day: date):
             with urllib.request.urlopen(req, timeout=45, context=_ctx) as resp:
                 body = json.load(resp)
             data = body.get("Data") or []
-            return data, len(data) >= PAGE_LIMIT
+            return data, len(data) >= PAGE_LIMIT, True
         except Exception as e:
             if attempt == 2:
                 print(f"    ! 失敗 {market_name}/{tc}/{r}: {e}")
-                return [], False
+                return [], False, False
             time.sleep(2)
 
 
@@ -138,12 +142,14 @@ def main():
     t0 = time.time()
     inserted = 0
     truncated_any = False
+    ok_count = 0
     n = 0
     for day in days:
         for (mname, mcode) in markets:
             for tc in TC_TYPES:
                 n += 1
-                data, truncated = fetch_day(mname, tc, day)
+                data, truncated, ok = fetch_day(mname, tc, day)
+                ok_count += ok
                 if truncated:
                     truncated_any = True
                     print(f"    ⚠️ {mname}/{tc}/{day} 回應達 {PAGE_LIMIT} 筆，可能被截斷")
@@ -177,9 +183,15 @@ def main():
 
     m, s = divmod(int(time.time() - t0), 60)
     print(f"\n完成：寫入/覆蓋 {inserted} 列，總列數 {before} → {after}"
-          f"（淨增 {after - before}），最新日期 {new_max}，耗時 {m}分{s:02d}秒")
+          f"（淨增 {after - before}），最新日期 {new_max}，"
+          f"請求成功 {ok_count}/{total_req}，耗時 {m}分{s:02d}秒")
     if truncated_any:
         print("⚠️ 有回應達 1000 筆上限，該日某市場可能不完整——需要的話用 build_seed_db.py 全量重建。")
+
+    # 一個請求都沒成功＝抓取真的斷了（API 掛掉／改網址／網路不通），非零退出讓 CI 亮紅燈。
+    # 「有成功但沒新資料」不算失敗——休市日本來就沒東西可抓，那由 CI 的過期守門負責。
+    if ok_count == 0:
+        raise SystemExit(f"✗ {total_req} 個請求全部失敗——抓取管線已中斷")
 
 
 if __name__ == "__main__":
