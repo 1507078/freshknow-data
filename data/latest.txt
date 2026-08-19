@@ -1,2 +1,2 @@
-data_through: 2026-08-18
-checked_at: 2026-08-18
+data_through: 2026-08-19
+checked_at: 2026-08-19
